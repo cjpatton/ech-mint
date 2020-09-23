@@ -1,9 +1,25 @@
-// Copyright 2020 Cloudflare, Inc. All rights reserved. Use of this source code
-// is governed by a BSD-style license that can be found in the LICENSE file.
+// Copyright 2020 Cloudflare, Inc.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 // Package ech implements the minting logic for the "Encrypted ClientHello
-// (ECH)" extension for TLS. This package compatible with the following
-// versions: draft-ietf-tls-esni-08.
+// (ECH)" extension for TLS. It is compatible with draft-ietf-tls-esni-08.
 package ech
 
 import (
@@ -11,6 +27,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/cisco/go-hpke"
 	"github.com/cisco/go-tls-syntax"
 
 	"golang.org/x/crypto/cryptobyte"
@@ -18,10 +35,7 @@ import (
 
 const (
 	// Supported ECH versions
-	// TODO... Rename to VersionECHDraft08
-	VersionDraft08 uint16 = 0xff08
-
-	echHpkeInfoConfigId = "tls13 ech config id"
+	VersionECHDraft08 uint16 = 0xff08
 )
 
 // ConfigTemplate defines the parameters for generating an ECH configuration and
@@ -58,7 +72,7 @@ type ConfigTemplate struct {
 // DefaultConfigTemplate returns an ECHConfigTemplate with suitable defaults.
 func DefaultConfigTemplate() ConfigTemplate {
 	return ConfigTemplate{
-		Version:    VersionDraft08,
+		Version:    VersionECHDraft08,
 		PublicName: "cloudflare-esni.com",
 		KemId:      HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
 		// NOTE: We offer two different KDFs by default so that our prototype
@@ -74,8 +88,8 @@ func DefaultConfigTemplate() ConfigTemplate {
 // Config represents an ECH configuration.
 type Config struct {
 	// Operational parameters
-	pk       *hpkePublicKey
 	contents serialConfigContents
+	pk       hpkePublicKey
 
 	// The ECH version for which this configuration is used.
 	Version uint16
@@ -124,7 +138,7 @@ func readConfig(raw []byte, config *Config) (int, error) {
 		return 0, fmt.Errorf("error parsing version")
 	}
 
-	if config.Version != VersionDraft08 {
+	if config.Version != VersionECHDraft08 {
 		return 0, fmt.Errorf("version not supported")
 	}
 
@@ -145,6 +159,14 @@ func readConfig(raw []byte, config *Config) (int, error) {
 
 	// Set the opaque contents.
 	config.Contents = raw[4 : n+4]
+
+	// Parse the HPKE public key.
+	pk, err := unmarshalHpkePublicKey(config.contents.PublicKey, config.contents.KemId)
+	if err != nil {
+		return 0, fmt.Errorf("error parsing HPKE public key: %s", err)
+	}
+	config.pk = *pk
+
 	return n + 4, nil
 }
 
@@ -157,18 +179,19 @@ func (config *Config) Marshal() ([]byte, error) {
 	return b.Bytes()
 }
 
-// GetId returns the configuration identifier for the KDF identified by `kdfId`.
-func (config *Config) GetId(kdfId uint16) (configId []byte, err error) {
-	rawConfig, err := config.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	return hpkeKdfDerive(rawConfig, nil, []byte(echHpkeInfoConfigId), kdfId)
-}
-
 // PublicName returns the name of the client-facing server.
 func (config *Config) PublicName() string {
 	return string(config.contents.PublicName)
+}
+
+// Kem returns the KEM public key.
+func (config *Config) Kem() hpke.KEMPublicKey {
+	return config.pk.kemPk
+}
+
+// KemId returns the identity of the KEM algorithm.
+func (config *Config) KemId() uint16 {
+	return config.contents.KemId
 }
 
 // CipherSuites returns the ECH ciphersuites offered by the server for this
@@ -226,11 +249,11 @@ func GenerateKey(template ConfigTemplate, rand io.Reader, now func() time.Time) 
 	}
 
 	config := &Config{
-		pk:       pk,
+		pk:       *pk,
+		contents: contents,
 		Version:  template.Version,
 		Length:   uint16(len(rawContents)),
 		Contents: rawContents,
-		contents: contents,
 	}
 	return &Key{*sk, config, now().Truncate(time.Second)}, nil
 }
@@ -272,6 +295,11 @@ func (key *Key) Marshal() ([]byte, error) {
 		return nil, err
 	}
 	return syntax.Marshal(ser)
+}
+
+// Kem returns the KEM secret key.
+func (key *Key) Kem() hpke.KEMPrivateKey {
+	return key.sk.kemSk
 }
 
 func readKey(raw []byte, key *Key) (int, error) {

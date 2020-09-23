@@ -1,5 +1,22 @@
-// Copyright 2020 Cloudflare, Inc. All rights reserved. Use of this source code
-// is governed by a BSD-style license that can be found in the LICENSE file.
+// Copyright 2020 Cloudflare, Inc.
+//
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+//
+// The above copyright notice and this permission notice shall be included in
+// all copies or substantial portions of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
 
 // There is a slight mismatch between the API exported by HPKE and the API
 // required to implement the ECH logic in the TLS stack. Namely, an "HPKE
@@ -47,14 +64,14 @@ const (
 	MAX_HPKE_KDF_EXTRACT_LEN uint16 = 64
 )
 
-// assembleHpkeCipherSuite maps the codepoints for an HPKE ciphersuite to the
+// AssembleHpkeCipherSuite maps the codepoints for an HPKE ciphersuite to the
 // ciphersuite's internal representation, verifying that the host supports the
 // cipher suite.
 //
 // NOTE: draft-irtf-cfrg-hpke-05 reserves the `0x0000` code point for dummy KEM,
 // KDF, and AEAD identifiers. `AssembleCipherSuite` interprets '0x000' as an
 // invalid algorithm.
-func assembleHpkeCipherSuite(kemId, kdfId, aeadId uint16) (hpke.CipherSuite, error) {
+func AssembleHpkeCipherSuite(kemId, kdfId, aeadId uint16) (hpke.CipherSuite, error) {
 	if kemId != HPKE_KEM_DHKEM_X25519_HKDF_SHA256 &&
 		kemId != HPKE_KEM_DHKEM_P256_HKDF_SHA256 {
 		return hpke.CipherSuite{}, fmt.Errorf("KEM not supported")
@@ -81,7 +98,7 @@ func generateHpkeKeyPair(rand io.Reader, kemId uint16) (*hpkePublicKey, *hpkeSec
 	// NOTE: Per the HPKE spec (draft-irtf-cfrg-hpke-05), the choice of KDF and
 	// AEAD is irrelevant to key generation. Thus, it is safe to supply stand-in
 	// values for these here.
-	hpkeSuite, err := assembleHpkeCipherSuite(kemId, dummyKdfId, dummyAeadId)
+	hpkeSuite, err := AssembleHpkeCipherSuite(kemId, dummyKdfId, dummyAeadId)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -114,7 +131,7 @@ type hpkePublicKey struct {
 // identified by `kemId`.
 func unmarshalHpkePublicKey(raw []byte, kemId uint16) (*hpkePublicKey, error) {
 	// NOTE: Stand-in values for KDF/AEAD algorithms are ignored.
-	hpkeSuite, err := assembleHpkeCipherSuite(kemId, dummyKdfId, dummyAeadId)
+	hpkeSuite, err := AssembleHpkeCipherSuite(kemId, dummyKdfId, dummyAeadId)
 	if err != nil {
 		return nil, err
 	}
@@ -129,7 +146,7 @@ func unmarshalHpkePublicKey(raw []byte, kemId uint16) (*hpkePublicKey, error) {
 func (pk *hpkePublicKey) marshaled() []byte {
 	if pk.raw == nil {
 		// NOTE: Stand-in values for KDF/AEAD algorithms are ignored.
-		hpkeSuite, err := assembleHpkeCipherSuite(pk.kemId, dummyKdfId, dummyAeadId)
+		hpkeSuite, err := AssembleHpkeCipherSuite(pk.kemId, dummyKdfId, dummyAeadId)
 		if err != nil {
 			// Handle unsupported HPKE ciphersuite as an internal bug. It
 			// shouldn't be possible to construct an hpkePublicKey for a
@@ -152,7 +169,7 @@ type hpkeSecretKey struct {
 // identified by `kemId`.
 func unmarshalHpkeSecretKey(raw []byte, kemId uint16) (*hpkeSecretKey, error) {
 	// NOTE: Stand-in values for KDF/AEAD algorithms are ignored.
-	hpkeSuite, err := assembleHpkeCipherSuite(kemId, dummyKdfId, dummyAeadId)
+	hpkeSuite, err := AssembleHpkeCipherSuite(kemId, dummyKdfId, dummyAeadId)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +184,7 @@ func unmarshalHpkeSecretKey(raw []byte, kemId uint16) (*hpkeSecretKey, error) {
 func (sk *hpkeSecretKey) marshaled() []byte {
 	if sk.raw == nil {
 		// NOTE: Stand-in values for KDF/AEAD algorithms are ignored.
-		hpkeSuite, err := assembleHpkeCipherSuite(sk.kemId, dummyKdfId, dummyAeadId)
+		hpkeSuite, err := AssembleHpkeCipherSuite(sk.kemId, dummyKdfId, dummyAeadId)
 		if err != nil {
 			// Handle unsupported HPKE ciphersuite as an internal bug. It
 			// shouldn't be possible to construct an hpkePublicKey for a
@@ -179,14 +196,12 @@ func (sk *hpkeSecretKey) marshaled() []byte {
 	return sk.raw
 }
 
-// hpkeKdfDerive returns Expand(Extract(salt, ikm), info, Nh), where Expand(),
-// Extract(), and Nh are KDF operations corresponding to `kdfId`.
-func hpkeKdfDerive(ikm, salt, info []byte, kdfId uint16) ([]byte, error) {
+// GetKdf returns an HPKE KDF scheme.
+func GetKdf(kdfId uint16) (hpke.KDFScheme, error) {
 	// NOTE: Stand-in values for KEM/AEAD algorithms are ignored.
-	hpkeSuite, err := assembleHpkeCipherSuite(dummyKemId, kdfId, dummyAeadId)
+	hpkeSuite, err := AssembleHpkeCipherSuite(dummyKemId, kdfId, dummyAeadId)
 	if err != nil {
 		return nil, err
 	}
-	prk := hpkeSuite.KDF.Extract(salt, ikm)
-	return hpkeSuite.KDF.Expand(prk, info, hpkeSuite.KDF.OutputSize()), nil
+	return hpkeSuite.KDF, nil
 }
