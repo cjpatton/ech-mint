@@ -27,7 +27,6 @@ import (
 	"encoding/pem"
 	"log"
 	"os"
-	"time"
 
 	"github.com/cjpatton/ech-mint"
 )
@@ -38,7 +37,7 @@ func main() {
 	x25519Template := ech.DefaultConfigTemplate()
 	x25519Template.KemId = ech.HPKE_KEM_DHKEM_X25519_HKDF_SHA256
 	x25519Template.Version = version
-	x25519Key, err := ech.GenerateKey(x25519Template, rand.Reader, time.Now)
+	x25519Key, err := ech.GenerateKey(x25519Template, rand.Reader)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -46,7 +45,7 @@ func main() {
 	p256Template := ech.DefaultConfigTemplate()
 	p256Template.KemId = ech.HPKE_KEM_DHKEM_P256_HKDF_SHA256
 	p256Template.Version = version
-	p256Key, err := ech.GenerateKey(p256Template, rand.Reader, time.Now)
+	p256Key, err := ech.GenerateKey(p256Template, rand.Reader)
 	if err != nil {
 		log.Fatal(err)
 	}

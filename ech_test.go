@@ -24,13 +24,12 @@ import (
 	"bytes"
 	"crypto/rand"
 	"testing"
-	"time"
 )
 
 func TestKeySerialization(t *testing.T) {
 	template := DefaultConfigTemplate()
 	template.ignoredExtensions = []byte("raw ECHConfigContents.extensions")
-	want, err := GenerateKey(template, rand.Reader, time.Now)
+	want, err := GenerateKey(template, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,10 +46,6 @@ func TestKeySerialization(t *testing.T) {
 
 	if !bytes.Equal(got.sk.marshaled(), want.sk.marshaled()) {
 		t.Errorf("sk: got %x; want %x", got.sk, want.sk)
-	}
-
-	if got.Created != want.Created {
-		t.Errorf("Created: got %s; want %s", got.Created, want.Created)
 	}
 
 	if got.Config.Version != want.Config.Version {

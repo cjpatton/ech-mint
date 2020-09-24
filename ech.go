@@ -25,7 +25,6 @@ package ech
 import (
 	"fmt"
 	"io"
-	"time"
 
 	"github.com/cisco/go-hpke"
 	"github.com/cisco/go-tls-syntax"
@@ -207,14 +206,11 @@ type Key struct {
 
 	// The configuration corresponding to this key.
 	Config *Config
-
-	// The time at which this key was created.
-	Created time.Time
 }
 
 // GenerateKey generates a new ECH key and corresponding configuration using
 // the parameters specified by `template`.
-func GenerateKey(template ConfigTemplate, rand io.Reader, now func() time.Time) (*Key, error) {
+func GenerateKey(template ConfigTemplate, rand io.Reader) (*Key, error) {
 	// Ensure the KEM algorithm is supported and generate an HPKE key pair.
 	pk, sk, err := generateHpkeKeyPair(rand, template.KemId)
 	if err != nil {
@@ -255,7 +251,7 @@ func GenerateKey(template ConfigTemplate, rand io.Reader, now func() time.Time) 
 		Length:   uint16(len(rawContents)),
 		Contents: rawContents,
 	}
-	return &Key{*sk, config, now().Truncate(time.Second)}, nil
+	return &Key{*sk, config}, nil
 }
 
 // UnmarshalKeys parses a sequence of ECH keys.
@@ -290,7 +286,6 @@ func (key *Key) Marshal() ([]byte, error) {
 	var err error
 	ser.Key = key.sk.marshaled()
 	ser.Config, err = key.Config.Marshal()
-	ser.Created = uint64(key.Created.Unix())
 	if err != nil {
 		return nil, err
 	}
@@ -313,8 +308,6 @@ func readKey(raw []byte, key *Key) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-
-	key.Created = time.Unix(int64(ser.Created), 0)
 
 	sk, err := unmarshalHpkeSecretKey(ser.Key, key.Config.contents.KemId)
 	if err != nil {
@@ -340,7 +333,6 @@ type serialConfigContents struct {
 
 // serialKey represents a serializeable Key object.
 type serialKey struct {
-	Key     []byte `tls:"head=2"`
-	Config  []byte `tls:"head=2"`
-	Created uint64
+	Key    []byte `tls:"head=2"`
+	Config []byte `tls:"head=2"`
 }
