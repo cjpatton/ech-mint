@@ -103,13 +103,19 @@ type Config struct {
 // UnmarshalECHConfigs parses a sequence of ECH configurations.
 func UnmarshalConfigs(raw []byte) ([]Config, error) {
 	configs := make([]Config, 0)
-	var config Config
-	for len(raw) > 0 {
-		n, err := readConfig(raw, &config)
+	s := cryptobyte.String(raw)
+	var t cryptobyte.String
+	var rawConfigs []byte
+	if !s.ReadUint16LengthPrefixed(&t) ||
+		!t.ReadBytes(&rawConfigs, len(t)) {
+	}
+	for len(rawConfigs) > 0 {
+		var config Config
+		n, err := readConfig(rawConfigs, &config)
 		if err != nil {
 			return nil, err
 		}
-		raw = raw[n:]
+		rawConfigs = rawConfigs[n:]
 		configs = append(configs, config)
 	}
 	return configs, nil

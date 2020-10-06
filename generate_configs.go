@@ -29,6 +29,8 @@ import (
 	"os"
 
 	"github.com/cjpatton/ech-mint"
+
+	"golang.org/x/crypto/cryptobyte"
 )
 
 func main() {
@@ -78,13 +80,17 @@ func main() {
 
 	log.Println("wrote keys.pem")
 
+	var b cryptobyte.Builder
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddBytes(rawConfigs)
+	})
 	configsOut, err := os.Create("configs.pem")
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer configsOut.Close()
 
-	if err = pem.Encode(configsOut, &pem.Block{Type: "ECH CONFIGS", Bytes: rawConfigs}); err != nil {
+	if err = pem.Encode(configsOut, &pem.Block{Type: "ECH CONFIGS", Bytes: b.BytesOrPanic()}); err != nil {
 		log.Fatal(err)
 	}
 
