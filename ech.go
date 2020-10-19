@@ -34,7 +34,7 @@ import (
 
 const (
 	// Supported ECH versions
-	VersionECHDraft08 uint16 = 0xff08
+	VersionECHDraft08 uint16 = 0xfe08
 )
 
 // ConfigTemplate defines the parameters for generating an ECH configuration and
