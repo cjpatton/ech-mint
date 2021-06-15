@@ -1,45 +1,245 @@
-// Copyright 2020 Cloudflare, Inc.
-//
-// Permission is hereby granted, free of charge, to any person obtaining a copy
-// of this software and associated documentation files (the "Software"), to deal
-// in the Software without restriction, including without limitation the rights
-// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-// copies of the Software, and to permit persons to whom the Software is
-// furnished to do so, subject to the following conditions:
-//
-// The above copyright notice and this permission notice shall be included in
-// all copies or substantial portions of the Software.
-//
-// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-// SOFTWARE.
-
 // Package ech implements the minting logic for the "Encrypted ClientHello
 // (ECH)" extension for TLS. It is compatible with draft-ietf-tls-esni-08.
 package ech
 
 import (
+	"errors"
 	"fmt"
 	"io"
 
-	"github.com/cisco/go-hpke"
-	"github.com/cisco/go-tls-syntax"
+	"github.com/cloudflare/circl/hpke"
+	"github.com/cloudflare/circl/kem"
 
 	"golang.org/x/crypto/cryptobyte"
 )
 
 const (
 	// Supported ECH versions
-	VersionECHDraft08 uint16 = 0xfe08
+	VersionECHDraft11 uint16 = 0xfe0b
 )
 
-// ConfigTemplate defines the parameters for generating an ECH configuration and
-// corresponding secret key.
-type ConfigTemplate struct {
+// ECHConfig represents an ECH configuration.
+type ECHConfig struct {
+	pk  kem.PublicKey
+	raw []byte
+
+	// Parsed from raw
+	version           uint16
+	configId          uint8
+	rawPublicName     []byte
+	rawPublicKey      []byte
+	kemId             uint16
+	suites            []hpkeSymmetricCipherSuite
+	maxNameLen        uint8
+	ignoredExtensions []byte
+}
+
+type hpkeSymmetricCipherSuite struct {
+	kdfId, aeadId uint16
+}
+
+// UnmarshalECHConfigs parses a sequence of ECH configurations, skipping
+// configurations with unrecognized versions.
+func UnmarshalECHConfigs(raw []byte) ([]ECHConfig, error) {
+	var (
+		err         error
+		config      ECHConfig
+		t, contents cryptobyte.String
+	)
+	configs := make([]ECHConfig, 0)
+	s := cryptobyte.String(raw)
+	if !s.ReadUint16LengthPrefixed(&t) || !s.Empty() {
+		return configs, errors.New("error parsing configs")
+	}
+	raw = raw[2:]
+ConfigsLoop:
+	for !t.Empty() {
+		l := len(t)
+		if !t.ReadUint16(&config.version) ||
+			!t.ReadUint16LengthPrefixed(&contents) {
+			return nil, errors.New("error parsing config")
+		}
+		n := l - len(t)
+		config.raw = raw[:n]
+		raw = raw[n:]
+
+		if config.version != VersionECHDraft11 {
+			continue ConfigsLoop
+		}
+		if !readConfigContents(&contents, &config) {
+			return nil, errors.New("error parsing config contents")
+		}
+
+		kem := hpke.KEM(config.kemId)
+		if !kem.IsValid() {
+			continue ConfigsLoop
+		}
+		config.pk, err = kem.Scheme().UnmarshalBinaryPublicKey(config.rawPublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing public key: %s", err)
+		}
+		configs = append(configs, config)
+	}
+	return configs, nil
+}
+
+func MarshalECHConfigs(configs []ECHConfig) ([]byte, error) {
+	var b cryptobyte.Builder
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		for _, config := range configs {
+			if config.raw != nil {
+				b.AddBytes(config.raw)
+			} else {
+				addConfig(b, config)
+			}
+		}
+	})
+	return b.Bytes()
+}
+
+func addConfig(b *cryptobyte.Builder, config ECHConfig) {
+	b.AddUint16(config.version)
+	b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+		b.AddUint8(config.configId)
+		b.AddUint16(config.kemId)
+		b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+			b.AddBytes(config.rawPublicKey)
+		})
+		b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+			for _, suite := range config.suites {
+				b.AddUint16(suite.kdfId)
+				b.AddUint16(suite.aeadId)
+			}
+		})
+		b.AddUint8(config.maxNameLen)
+		b.AddUint8LengthPrefixed(func(b *cryptobyte.Builder) {
+			b.AddBytes(config.rawPublicName)
+		})
+		b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+			b.AddBytes(config.ignoredExtensions)
+		})
+	})
+}
+
+func readConfigContents(contents *cryptobyte.String, config *ECHConfig) bool {
+	var t cryptobyte.String
+	if !contents.ReadUint8(&config.configId) ||
+		!contents.ReadUint16(&config.kemId) ||
+		!contents.ReadUint16LengthPrefixed(&t) ||
+		!t.ReadBytes(&config.rawPublicKey, len(t)) ||
+		!contents.ReadUint16LengthPrefixed(&t) ||
+		len(t)%4 != 0 {
+		return false
+	}
+
+	config.suites = nil
+	for !t.Empty() {
+		var kdfId, aeadId uint16
+		if !t.ReadUint16(&kdfId) || !t.ReadUint16(&aeadId) {
+			// This indicates an internal bug.
+			panic("internal error while parsing contents.cipher_suites")
+		}
+		config.suites = append(config.suites, hpkeSymmetricCipherSuite{kdfId, aeadId})
+	}
+
+	if !contents.ReadUint8(&config.maxNameLen) ||
+		!contents.ReadUint8LengthPrefixed(&t) ||
+		!t.ReadBytes(&config.rawPublicName, len(t)) ||
+		!contents.ReadUint16LengthPrefixed(&t) ||
+		!t.ReadBytes(&config.ignoredExtensions, len(t)) ||
+		!contents.Empty() {
+		return false
+	}
+	return true
+}
+
+// ECHKey represents an ECH key and its corresponding configuration.
+// The encoding of an ECH Key has the format defined below (in TLS syntax). Note
+// that the ECH standard does not specify this format.
+//
+// struct {
+//     opaque sk<0..2^16-1>;
+//     ECHConfig config<0..2^16>; // draft-ietf-tls-esni-11
+// } ECHKey;
+type ECHKey struct {
+	sk kem.PrivateKey
+
+	// Parsed from raw
+	rawSecretKey []byte
+	Config       ECHConfig
+}
+
+// UnmarshalECHKeys parses a sequence of ECH keys.
+func UnmarshalECHKeys(raw []byte) ([]ECHKey, error) {
+	var (
+		err                  error
+		key                  ECHKey
+		sk, config, contents cryptobyte.String
+	)
+	s := cryptobyte.String(raw)
+	keys := make([]ECHKey, 0)
+KeysLoop:
+	for !s.Empty() {
+		if !s.ReadUint16LengthPrefixed(&sk) ||
+			!s.ReadUint16LengthPrefixed(&config) {
+			return nil, errors.New("error parsing key")
+		}
+
+		key.Config.raw = config
+		if !config.ReadUint16(&key.Config.version) ||
+			!config.ReadUint16LengthPrefixed(&contents) ||
+			!config.Empty() {
+			return nil, errors.New("error parsing config")
+		}
+
+		if key.Config.version != VersionECHDraft11 {
+			continue KeysLoop
+		}
+		if !readConfigContents(&contents, &key.Config) {
+			return nil, errors.New("error parsing config contents")
+		}
+
+		for _, suite := range key.Config.suites {
+			if !hpke.KDF(suite.kdfId).IsValid() ||
+				!hpke.AEAD(suite.aeadId).IsValid() {
+				continue KeysLoop
+			}
+		}
+
+		kem := hpke.KEM(key.Config.kemId)
+		if !kem.IsValid() {
+			continue KeysLoop
+		}
+		key.Config.pk, err = kem.Scheme().UnmarshalBinaryPublicKey(key.Config.rawPublicKey)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing public key: %s", err)
+		}
+		key.rawSecretKey = sk
+		key.sk, err = kem.Scheme().UnmarshalBinaryPrivateKey(sk)
+		if err != nil {
+			return nil, fmt.Errorf("error parsing secret key: %s", err)
+		}
+
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+// XXX
+func MarshalECHKeys(keys []ECHKey) ([]byte, error) {
+	var b cryptobyte.Builder
+	for _, key := range keys {
+		b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+			b.AddBytes(key.rawSecretKey)
+		})
+		b.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+			addConfig(b, key.Config)
+		})
+	}
+	return b.Bytes()
+}
+
+type ECHConfigTemplate struct {
 	// The version of ECH to use for this configuration.
 	Version uint16
 
@@ -60,7 +260,7 @@ type ConfigTemplate struct {
 	// extension, the ClientHelloInner is padded to this length in order to
 	// protect the server name. This value may be 0, in which case the default
 	// padding is used.
-	MaximumNameLength uint16
+	MaximumNameLength uint8
 
 	// Extensions to add to the end of the configuration. This implementation
 	// currently doesn't handle extensions, but this field is useful for testing
@@ -69,276 +269,56 @@ type ConfigTemplate struct {
 }
 
 // DefaultConfigTemplate returns an ECHConfigTemplate with suitable defaults.
-func DefaultConfigTemplate() ConfigTemplate {
-	return ConfigTemplate{
-		Version:    VersionECHDraft08,
+func DefaultConfigTemplate() ECHConfigTemplate {
+	return ECHConfigTemplate{
+		Version:    VersionECHDraft11,
 		PublicName: "cloudflare-esni.com",
-		KemId:      HPKE_KEM_DHKEM_X25519_HKDF_SHA256,
-		// NOTE: We offer two different KDFs by default so that our prototype
-		// can exercise the logic of computing the configuration identifier
-		// using the client's selected ciphersuite.
-		KdfIds:  []uint16{HPKE_KDF_HKDF_SHA256, HPKE_KDF_HKDF_SHA384},
-		AeadIds: []uint16{HPKE_AEAD_AES128_GCM, HPKE_AEAD_CHACHA20_POLY1305},
+		KemId:      uint16(hpke.KEM_X25519_HKDF_SHA256),
+		KdfIds:     []uint16{uint16(hpke.KDF_HKDF_SHA256)},
+		AeadIds:    []uint16{uint16(hpke.AEAD_AES128GCM)},
 		// Use the default padding scheme.
 		MaximumNameLength: 0,
 	}
 }
 
-// Config represents an ECH configuration.
-type Config struct {
-	// Operational parameters
-	contents serialConfigContents
-	pk       hpkePublicKey
-
-	// The ECH version for which this configuration is used.
-	Version uint16
-
-	// The length of the ECHConfigContents.
-	Length uint16
-
-	// The opaque ECHConfigContents.
-	Contents []byte
-}
-
-// UnmarshalECHConfigs parses a sequence of ECH configurations.
-func UnmarshalConfigs(raw []byte) ([]Config, error) {
-	configs := make([]Config, 0)
-	s := cryptobyte.String(raw)
-	var t cryptobyte.String
-	var rawConfigs []byte
-	if !s.ReadUint16LengthPrefixed(&t) ||
-		!t.ReadBytes(&rawConfigs, len(t)) {
-	}
-	for len(rawConfigs) > 0 {
-		var config Config
-		n, err := readConfig(rawConfigs, &config)
-		if err != nil {
-			return nil, err
-		}
-		rawConfigs = rawConfigs[n:]
-		configs = append(configs, config)
-	}
-	return configs, nil
-}
-
-// UnmarshalConfig parses an ECH configuration.
-func UnmarshalConfig(raw []byte) (*Config, error) {
-	config := new(Config)
-	if n, err := readConfig(raw, config); err != nil {
-		return nil, err
-	} else if n != len(raw) {
-		return nil, fmt.Errorf("structure too long")
-	}
-	return config, nil
-}
-
-// readConfig consumes the next ECHConfig encoded by `raw` and returns its
-// length.
-func readConfig(raw []byte, config *Config) (int, error) {
-	// Parse the version and ensure we know how to proceed before attempting to
-	// parse the configuration contents. Currently on draft-ietf-tls-esni-08 is
-	// supported.
-	s := cryptobyte.String(raw)
-	if !s.ReadUint16(&config.Version) {
-		return 0, fmt.Errorf("error parsing version")
-	}
-
-	if config.Version != VersionECHDraft08 {
-		return 0, fmt.Errorf("version not supported")
-	}
-
-	// Set the length of the opaque contents.
-	if !s.ReadUint16(&config.Length) {
-		return 0, fmt.Errorf("error parsing length")
-	}
-
-	// Parse the configuration contents.
-	n, err := syntax.Unmarshal(s, &config.contents)
-	if err != nil {
-		return 0, err
-	}
-
-	if uint16(n) != config.Length {
-		return 0, fmt.Errorf("contents length: got %d; expected %d", n, config.Length)
-	}
-
-	// Set the opaque contents.
-	config.Contents = raw[4 : n+4]
-
-	// Parse the HPKE public key.
-	pk, err := unmarshalHpkePublicKey(config.contents.PublicKey, config.contents.KemId)
-	if err != nil {
-		return 0, fmt.Errorf("error parsing HPKE public key: %s", err)
-	}
-	config.pk = *pk
-
-	return n + 4, nil
-}
-
-// Marshal returns the serialized ECH configuration.
-func (config *Config) Marshal() ([]byte, error) {
-	var b cryptobyte.Builder
-	b.AddUint16(config.Version)
-	b.AddUint16(config.Length)
-	b.AddBytes(config.Contents)
-	return b.Bytes()
-}
-
-// PublicName returns the name of the client-facing server.
-func (config *Config) PublicName() string {
-	return string(config.contents.PublicName)
-}
-
-// Kem returns the KEM public key.
-func (config *Config) Kem() hpke.KEMPublicKey {
-	return config.pk.kemPk
-}
-
-// KemId returns the identity of the KEM algorithm.
-func (config *Config) KemId() uint16 {
-	return config.contents.KemId
-}
-
-// CipherSuites returns the ECH ciphersuites offered by the server for this
-// configuration.
-func (config *Config) CipherSuites() []CipherSuite {
-	return config.contents.CipherSuites
-}
-
-// Key represents an ECH key and its corresponding configuration.
-type Key struct {
-	// Operational parameters
-	sk hpkeSecretKey
-
-	// The configuration corresponding to this key.
-	Config *Config
-}
-
-// GenerateKey generates a new ECH key and corresponding configuration using
 // the parameters specified by `template`.
-func GenerateKey(template ConfigTemplate, rand io.Reader) (*Key, error) {
-	// Ensure the KEM algorithm is supported and generate an HPKE key pair.
-	pk, sk, err := generateHpkeKeyPair(rand, template.KemId)
+func GenerateKey(template ECHConfigTemplate, rand io.Reader) (*ECHKey, error) {
+	pk, sk, err := hpke.KEM(template.KemId).Scheme().GenerateKeyPair()
 	if err != nil {
-		return nil, err // May indicate the KEM algorithm is not supported.
+		return nil, err
 	}
 
-	// Ensure the configuration names at least one ciphersuite.
-	if len(template.KdfIds) == 0 || len(template.AeadIds) == 0 {
-		return nil, fmt.Errorf("config does not name a ciphersuite")
+	rawPublicKey, err := pk.MarshalBinary()
+	if err != nil {
+		return nil, err
 	}
 
-	// Compute the list of ciphersuites.
-	suites := make([]CipherSuite, 0)
+	rawSecretKey, err := sk.MarshalBinary()
+	if err != nil {
+		return nil, err
+	}
+
+	suites := make([]hpkeSymmetricCipherSuite, 0, len(template.KdfIds)*len(template.AeadIds))
 	for _, kdfId := range template.KdfIds {
 		for _, aeadId := range template.AeadIds {
-			suites = append(suites, CipherSuite{kdfId, aeadId})
+			suites = append(suites, hpkeSymmetricCipherSuite{kdfId, aeadId})
 		}
 	}
 
-	contents := serialConfigContents{
-		PublicName:        []byte(template.PublicName),
-		PublicKey:         pk.marshaled(),
-		KemId:             template.KemId,
-		CipherSuites:      suites,
-		MaximumNameLength: template.MaximumNameLength,
-		IgnoredExtensions: nil,
-	}
-
-	rawContents, err := syntax.Marshal(contents)
-	if err != nil {
-		return nil, err
-	}
-
-	config := &Config{
-		pk:       *pk,
-		contents: contents,
-		Version:  template.Version,
-		Length:   uint16(len(rawContents)),
-		Contents: rawContents,
-	}
-	return &Key{*sk, config}, nil
-}
-
-// UnmarshalKeys parses a sequence of ECH keys.
-func UnmarshalKeys(raw []byte) ([]Key, error) {
-	keys := make([]Key, 0)
-	var key Key
-	for len(raw) > 0 {
-		n, err := readKey(raw, &key)
-		if err != nil {
-			return nil, err
-		}
-		raw = raw[n:]
-		keys = append(keys, key)
-	}
-	return keys, nil
-}
-
-// UnmarshalKey parses an ECH key.
-func UnmarshalKey(raw []byte) (*Key, error) {
-	key := new(Key)
-	if n, err := readKey(raw, key); err != nil {
-		return nil, err
-	} else if n != len(raw) {
-		return nil, fmt.Errorf("structure too long")
-	}
-	return key, nil
-}
-
-// Marshal serializes an ECH key.
-func (key *Key) Marshal() ([]byte, error) {
-	var ser serialKey
-	var err error
-	ser.Key = key.sk.marshaled()
-	ser.Config, err = key.Config.Marshal()
-	if err != nil {
-		return nil, err
-	}
-	return syntax.Marshal(ser)
-}
-
-// Kem returns the KEM secret key.
-func (key *Key) Kem() hpke.KEMPrivateKey {
-	return key.sk.kemSk
-}
-
-func readKey(raw []byte, key *Key) (int, error) {
-	var ser serialKey
-	n, err := syntax.Unmarshal(raw, &ser)
-	if err != nil {
-		return 0, err
-	}
-
-	key.Config, err = UnmarshalConfig(ser.Config)
-	if err != nil {
-		return 0, err
-	}
-
-	sk, err := unmarshalHpkeSecretKey(ser.Key, key.Config.contents.KemId)
-	if err != nil {
-		return 0, nil
-	}
-	key.sk = *sk
-	return n, nil
-}
-
-// serialConfigContents represents an ECHConfigContents structure as defined in
-// draft-ietf-tls-esni-08.
-type serialConfigContents struct {
-	PublicName        []byte `tls:"head=2"`
-	PublicKey         []byte `tls:"head=2"`
-	KemId             uint16
-	CipherSuites      []CipherSuite `tls:"head=2,min=4,max=65532"` //4..2^16-4
-	MaximumNameLength uint16
-
-	// In draft-ietf-tls-esni-08, the last field of the ECHConfig is
-	// `extensions`. This implementation currently ignores it.
-	IgnoredExtensions []byte `tls:"head=2"`
-}
-
-// serialKey represents a serializeable Key object.
-type serialKey struct {
-	Key    []byte `tls:"head=2"`
-	Config []byte `tls:"head=2"`
+	return &ECHKey{
+		sk:           sk,
+		rawSecretKey: rawSecretKey,
+		Config: ECHConfig{
+			pk:                pk,
+			raw:               nil,
+			version:           template.Version,
+			configId:          0, // XXX
+			rawPublicName:     []byte(template.PublicName),
+			rawPublicKey:      rawPublicKey,
+			kemId:             template.KemId,
+			suites:            suites,
+			maxNameLen:        template.MaximumNameLength,
+			ignoredExtensions: template.ignoredExtensions,
+		},
+	}, nil
 }
