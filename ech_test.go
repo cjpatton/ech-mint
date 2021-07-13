@@ -37,7 +37,7 @@ func TestECHKeysSerialization(t *testing.T) {
 	}
 }
 
-func TEstECHConfigsSerialization(t *testing.T) {
+func TestECHConfigsSerialization(t *testing.T) {
 	keys := genTestKeys(t)
 
 	want := make([]ECHConfig, 0)
@@ -65,19 +65,25 @@ func TEstECHConfigsSerialization(t *testing.T) {
 }
 
 func genTestKeys(t *testing.T) []ECHKey {
-	template := DefaultConfigTemplate()
+	template := DefaultConfigTemplate(0)
 	template.KemId = uint16(hpke.KEM_X25519_HKDF_SHA256)
 	template.ignoredExtensions = []byte("raw ECHConfigContents.extensions")
 	x25519Key, err := GenerateKey(template, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if x25519Key.Config.configId != 0 {
+		t.Fatalf("incorrect configId: got %d; want %d", x25519Key.Config.configId, 0)
+	}
 
+	template = DefaultConfigTemplate(1)
 	template.KemId = uint16(hpke.KEM_P256_HKDF_SHA256)
-	template.ignoredExtensions = nil
 	p256Key, err := GenerateKey(template, rand.Reader)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if p256Key.Config.configId != 1 {
+		t.Fatalf("incorrect configId: got %d; want %d", p256Key.Config.configId, 1)
 	}
 
 	return []ECHKey{*x25519Key, *p256Key}

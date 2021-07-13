@@ -15,7 +15,7 @@ import (
 
 const (
 	// Supported ECH versions
-	VersionECHDraft11 uint16 = 0xfe0b
+	VersionECHDraft12 uint16 = 0xfe0c
 )
 
 // ECHConfig represents an ECH configuration.
@@ -63,7 +63,7 @@ ConfigsLoop:
 		config.raw = raw[:n]
 		raw = raw[n:]
 
-		if config.version != VersionECHDraft11 {
+		if config.version != VersionECHDraft12 {
 			continue ConfigsLoop
 		}
 		if !readConfigContents(&contents, &config) {
@@ -192,7 +192,7 @@ KeysLoop:
 			return nil, errors.New("error parsing config")
 		}
 
-		if key.Config.version != VersionECHDraft11 {
+		if key.Config.version != VersionECHDraft12 {
 			continue KeysLoop
 		}
 		if !readConfigContents(&contents, &key.Config) {
@@ -243,6 +243,9 @@ type ECHConfigTemplate struct {
 	// The version of ECH to use for this configuration.
 	Version uint16
 
+	// Id is the unique identifier for this configuration.
+	Id uint8
+
 	// The name of the client-facing server.
 	PublicName string
 
@@ -269,9 +272,10 @@ type ECHConfigTemplate struct {
 }
 
 // DefaultConfigTemplate returns an ECHConfigTemplate with suitable defaults.
-func DefaultConfigTemplate() ECHConfigTemplate {
+func DefaultConfigTemplate(id uint8) ECHConfigTemplate {
 	return ECHConfigTemplate{
-		Version:    VersionECHDraft11,
+		Version:    VersionECHDraft12,
+		Id:         id,
 		PublicName: "cloudflare-esni.com",
 		KemId:      uint16(hpke.KEM_X25519_HKDF_SHA256),
 		KdfIds:     []uint16{uint16(hpke.KDF_HKDF_SHA256)},
@@ -312,7 +316,7 @@ func GenerateKey(template ECHConfigTemplate, rand io.Reader) (*ECHKey, error) {
 			pk:                pk,
 			raw:               nil,
 			version:           template.Version,
-			configId:          0, // XXX
+			configId:          template.Id,
 			rawPublicName:     []byte(template.PublicName),
 			rawPublicKey:      rawPublicKey,
 			kemId:             template.KemId,

@@ -13,9 +13,22 @@ import (
 )
 
 func main() {
-	version := ech.VersionECHDraft11
+	version := ech.VersionECHDraft12
 
-	x25519Template := ech.DefaultConfigTemplate()
+	// Generate two unique IDs.
+	var ids [2]byte
+	for {
+		if n, err := rand.Read(ids[:]); err != nil {
+			log.Fatalf("rng error: %s", err)
+		} else if n != 2 {
+			log.Fatalf("short read from rng")
+		}
+		if ids[0] != ids[1] {
+			break
+		}
+	}
+
+	x25519Template := ech.DefaultConfigTemplate(uint8(ids[0]))
 	x25519Template.KemId = uint16(hpke.KEM_X25519_HKDF_SHA256)
 	x25519Template.Version = version
 	x25519Key, err := ech.GenerateKey(x25519Template, rand.Reader)
@@ -23,8 +36,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	p256Template := ech.DefaultConfigTemplate()
-	x25519Template.KemId = uint16(hpke.KEM_P256_HKDF_SHA256)
+	p256Template := ech.DefaultConfigTemplate(uint8(ids[1]))
+	p256Template.KemId = uint16(hpke.KEM_P256_HKDF_SHA256)
 	p256Template.Version = version
 	p256Key, err := ech.GenerateKey(p256Template, rand.Reader)
 	if err != nil {
