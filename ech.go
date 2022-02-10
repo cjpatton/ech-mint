@@ -15,7 +15,7 @@ import (
 
 const (
 	// Supported ECH versions
-	VersionECHDraft12 uint16 = 0xfe0c
+	VersionECHDraft13 uint16 = 0xfe0d
 )
 
 // ECHConfig represents an ECH configuration.
@@ -63,7 +63,7 @@ ConfigsLoop:
 		config.raw = raw[:n]
 		raw = raw[n:]
 
-		if config.version != VersionECHDraft12 {
+		if config.version != VersionECHDraft13 {
 			continue ConfigsLoop
 		}
 		if !readConfigContents(&contents, &config) {
@@ -192,7 +192,7 @@ KeysLoop:
 			return nil, errors.New("error parsing config")
 		}
 
-		if key.Config.version != VersionECHDraft12 {
+		if key.Config.version != VersionECHDraft13 {
 			continue KeysLoop
 		}
 		if !readConfigContents(&contents, &key.Config) {
@@ -274,7 +274,7 @@ type ECHConfigTemplate struct {
 // DefaultConfigTemplate returns an ECHConfigTemplate with suitable defaults.
 func DefaultConfigTemplate(id uint8) ECHConfigTemplate {
 	return ECHConfigTemplate{
-		Version:    VersionECHDraft12,
+		Version:    VersionECHDraft13,
 		Id:         id,
 		PublicName: "cloudflare-esni.com",
 		KemId:      uint16(hpke.KEM_X25519_HKDF_SHA256),
